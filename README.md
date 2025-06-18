@@ -25,7 +25,7 @@ This project analyzes customer data from a fictional telecom company to identify
 ## Deliverables
 - `2024_BANA4080_RyanMorris_FinalProject.html`: Full report with model outputs and business recommendations
 - `BANA 4080 Churning Insight`: Executive-level summary of findings (PowerPoint)
-- [Video Summary(5 min)](https://drive.google.com/file/d/1b6EZ_tlZd7g-oSEKbHup6OgERxDbj_CC/view?usp=sharing): Solo walkthrough of project insights
+- [Video Summary(6 min)](https://drive.google.com/file/d/1b6EZ_tlZd7g-oSEKbHup6OgERxDbj_CC/view?usp=sharing): Solo walkthrough of project insights
 
 ## Notes
 Completed solo as a capstone in BANA 4080: Data Mining. Demonstrates end-to-end analytics from cleaning and modeling to business recommendation.
