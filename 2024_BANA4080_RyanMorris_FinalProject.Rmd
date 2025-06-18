@@ -1,0 +1,528 @@
+---
+title: "2024 BANA 2080 FinalProject"
+author: "Ryan Morris"
+date: "2024-12-10"
+output:
+  html_document:
+    code_folding: hide
+---
+```{r setup, include=FALSE}
+# Set global knitr chunk options
+knitr::opts_chunk$set(
+  fig.align = "center",
+  error = FALSE,
+  message = FALSE, 
+  warning = FALSE, 
+  collapse = TRUE 
+)
+```
+
+## Final Project Report - Regork Phone/Internet Consumer Analysis  {.tabset .tabset-pills}
+
+### Introduction
+
+#### Insights into Consumer Churning
+
+  Customer retention is a critical aspect of Regork's success in the highly competitive telecommunications market. Understanding why customers leave and how to prevent it can significantly impact profitability, as retaining current customers is often more cost-effective than acquiring new ones. This analysis seeks to address the pressing question: What steps can we take to better retain our customers?
+
+  To tackle this challenge, we analyze a dataset containing customer demographics, service usage, billing details, and retention status. We employ machine learning methodologies, including MARS, Bagged Trees, and Random Forest, to identify key factors influencing customer churn. These insights will allow us to develop a predictive model that can pinpoint customers at risk of leaving.
+
+  The insights and tools generated from this analysis will equip Regork with actionable strategies to enhance customer loyalty. By identifying churn-prone customers and understanding their motivations, we can offer targeted incentives and improve service offerings, ensuring long-term customer satisfaction and retention.
+
+---
+
+### Packages/Libraries Required
+
+#### The following packages and libraries were used:
+
+- `tidyverse` - A collection of open-source packages that offer methods to import, tidy, manipulate, and visualize data.
+- `knitr` - Offers methods to help generate reports within R markdown
+- `ggplot2` - part of tidyverse, this package offers several methods to help display data in a variety of geoms
+- `tidymodels` - A suite of packages designed for machine learning and statistical modeling workflows, emphasizing a unified and tidy approach.
+- `vip` - Short for "Variable Importance Plots," this package provides tools to interpret machine learning models by visualizing the importance of predictors.
+- `baguette` - Extends the tidymodels framework to implement ensemble modeling techniques like bagged trees, boosting predictive accuracy.
+- `pdp` - Provides tools to create Partial Dependence Plots (PDPs), helping visualize the relationship between features and predictions in machine learning models.
+- `kernlab` - A package for kernel-based machine learning algorithms.
+- `yardstick` - Used for evaluating and comparing model performance
+
+```{r}
+# Helper packages
+library(tidyverse) # for data wrangling & plotting
+
+# Modeling packages
+library(tidymodels)
+
+# Model interpretability packages
+library(vip)  
+library(baguette)
+library(pdp)
+library(kernlab)
+library(yardstick)
+```
+
+### Data Aggregation and Tidying
+
+
+Our data looks at our response variable 'Status' which tells us whether the customer is currently with us or has left. It has twenty potential predictor variables along side that, that may help paint the picture of the which customers will churn. Before diving in, we want to note that 11 customers were removed from the dataset. Their tenure with our company was 0, which means that they just signed up with us and haven't faced the decision to churn yet.
+
+```{r}
+retention <- read_csv("data/customer_retention.csv")
+retention <- retention %>%
+  mutate(Status = factor(Status)) %>%
+  mutate(StatusDummy = ifelse(Status == "Current", 1, 0),
+         InternetServDummy = ifelse(InternetService != "No", "Yes", "No"))
+#Eleven records with tenure = 0 were removed, as these customers have not yet faced the decision to churn.
+retention <- retention %>%
+  filter(Tenure != 0)
+```
+
+
+```{r}
+# Format any Negative Text values to simple "No"
+for (column in colnames(retention)) {
+  for (i in 1:nrow(retention)) {  # Loop through each row of the column
+    if (retention[i, column] == "No phone service" || retention[i, column] == "No internet service") {
+      retention[i, column] <- "No"  # Replace with "No"
+    }
+  }
+}
+
+
+```
+
+```{r}
+for (column in colnames(retention)) {
+  # Check if the column is numeric
+  if (class(retention[[column]]) == "numeric") {
+    print(paste("Correlation test for:", column))
+    print(cor.test(retention[[column]], retention$StatusDummy))
+  } 
+  # If the column is not numeric
+  else {
+    print(paste("Chi-square test for:", column))
+    tableChiSqr <- table(retention[[column]], retention$Status)
+    print(chisq.test(tableChiSqr))
+  }
+}
+```
+
+### Speculative Analysis
+
+#### Speculated Relationships
+  As we move forward into this analysis, we wanted to start by speculating on how the variables in this dataset may relate to whether a customer leaves or not. We took this in three directions. 
+
+  First, we wanted to understand the relationship between length of tenure and churning. The data imaged below is split into categories based on which services the customer utilized.  What these graphs show is a tendency for those who decided to churn having shorter tenures. This is especially evident in our phone service where there is a steep drop off after the first year that persists in the rest of the data range. This may imply that once a customer has decided to stick with us for a few years, there is a good chance we can keep them as customers. 
+  
+- **Tenure Length**
+
+```{r}
+#Exploring Relationships between 
+retention %>%
+  ggplot(aes(x = Tenure, fill = Status)) +
+  geom_histogram(binwidth = 5, position = "stack", alpha = 0.7) +
+  facet_wrap(~ InternetServDummy + PhoneService, 
+             labeller = labeller(
+               InternetServDummy = c("No" = "No Internet", "Yes" = "Internet Service"),
+               PhoneService = c("No" = "No Phone", "Yes" = "Phone Service")
+             )) +
+  labs(title = "Tenure vs Status",
+        subtitle = "Churn trends by tenure and services",
+        x = "Number of Periods as Customer",
+        fill = "Status") +
+  theme_light() +
+  scale_fill_ordinal()
+```
+- **Internet Features**
+
+  The next relationship we wanted to explore was that between the number internet features and tendency to churn. We split this between our DSL and Fiber Optics consumers to make sure we see if there is any visible variance between the two. Both services show a similar trend. Customers with 2+ of our service additions have a higher tendency to stay than those with 0-1. That is even more prevalent for customers who are taking advantage of 5 or all 6. 
+```{r}
+InternetFeatRetention <- retention %>%
+  filter(InternetService != "No") %>%
+  mutate(FeatureCount = 0) 
+
+# Calculate FeatureCount using row-wise sums of conditions
+InternetFeatRetention$FeatureCount <- rowSums(InternetFeatRetention[, 
+    c("OnlineSecurity", "OnlineBackup",  "DeviceProtection", "TechSupport", "StreamingTV", "StreamingMovies")] == "Yes")
+
+InternetFeatRetention %>%  
+  ggplot(aes(x = FeatureCount, fill = Status)) +
+  geom_bar(position = "stack", alpha = 0.7) +
+  facet_wrap(~InternetService) +
+  labs(title = "Number of Internet Service Features by Customer Status",
+       x = "Number of Features Utilized",
+       y = "Count of Customer",
+       fill = "Customer Status") +
+  theme_minimal() +
+  scale_fill_ordinal()
+
+
+```
+- **Partners and Dependents**
+
+The last relationship we wanted to understand was the likelihood of household with multiple individuals churning. Our data has information on multiperson household split into two categories: those with/without partners and those with/without dependents. For this top level view, we opted to look at both categories individually, but one thing to keep in mind is that these two graphs have some redundancy. This first graph is for Partners, and see that those with Partners are less likely to churn. The second looks at dependents, and we see the same story. While this isn't definitive, we can start to understand that there is a relationship for customers using the service with multiple household members.
+
+```{r}
+# Plot for Partner vs Churn
+retention %>%
+  ggplot(aes(x = Partner, fill = Status)) +
+  geom_bar(position = "fill") +  # Use 'fill' to show proportion
+  labs(title = "Partner Status vs Customer Status",
+       x = "Partner Status", 
+       y = "Proportion of Customers",
+       fill = "Customer Status") +
+  scale_fill_ordinal() +
+  theme_minimal()
+
+# Plot for Dependents vs Churn
+retention %>%
+  ggplot(aes(x = Dependents, fill = Status)) +
+  geom_bar(position = "fill") +  # Use 'fill' to show proportion
+  labs(title = "Dependents Status vs Customer Status",
+       x = "Dependents Status", 
+       y = "Proportion of Customers",
+       fill = "Customer Status") +
+  scale_fill_ordinal() +
+  theme_minimal()
+```
+
+
+### Machine Learning Models
+
+#### MARS
+
+We began with a Multivariate Adaptive Regression Splines (MARS) model to assess its classification performance.
+
+```{r}
+retentionOne <- read_csv("data/customer_retention.csv")
+retentionOne <- retentionOne %>%
+  mutate(Status = factor(Status)) %>%
+  filter(Tenure != 0)
+
+set.seed(123)
+split  <- rsample::initial_split(retentionOne, prop = 0.7, strata = "Status")
+reten_train  <- rsample::training(split)
+reten_test   <- rsample::testing(split)
+
+mars_mod <- mars(mode = "classification", num_terms = tune(), prod_degree = tune())
+
+set.seed(123)
+folds <- vfold_cv(reten_train, v = 5, strata = "Status")
+
+model_recipe <- recipe(Status ~ ., data = reten_train)
+
+hyper_grid <- grid_regular(
+ num_terms(range = c(1, 50)), 
+ prod_degree(),
+ levels = 50
+ )
+
+results <- tune_grid(mars_mod, model_recipe, resamples = folds, grid = hyper_grid)
+
+show_best(results, metric = "roc_auc")
+```
+
+```{r}
+mars_best_hyperparameters <- select_best(results, metric = "roc_auc")
+
+final_mars_wf <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(mars_mod) %>%
+  finalize_workflow(mars_best_hyperparameters)
+
+mars_final_fit <- final_mars_wf %>%
+  fit(data = reten_train)
+
+mars_final_fit %>%
+   predict(reten_test) %>%
+   bind_cols(reten_test %>% select(Status)) %>%
+   conf_mat(truth = Status, estimate = .pred_class)
+
+mars_final_fit %>%
+  predict(reten_train, type = "prob") %>%
+  mutate(truth = reten_train$Status) %>%
+  roc_curve(truth, .pred_Current) %>%
+  autoplot()
+
+mars_final_fit %>%
+  extract_fit_parsnip() %>%
+  vip(num_features = 20)
+```
+
+**Performance Summary:**
+
+- **Top ROC_AUC:** 84.97%
+- **Confusion Matrix:**
+  - True Positives: 1383
+  - True Negatives: 315
+  - False Positives: 242
+  - False Negatives: 157
+
+**Key Features:** Total Charges, Tenure, Monthly Charges, Payment Method (Electronic Check), Online Security (Yes).
+
+---
+
+#### Bagged Tree
+We next utlized the Bagged Tree method.
+```{r}
+set.seed(123)
+bt_train <- reten_train
+bt_test <- reten_test
+btkfold <- vfold_cv(bt_train, v = 5)
+
+model_recipe <- recipe(Status ~ ., data = bt_train)
+
+bt_mod <- bag_tree() %>%
+  set_engine("rpart", times = tune()) %>%
+  set_mode("classification")
+
+bt_hyper_grid <- expand.grid(times = c(5, 25, 50, 100))
+
+set.seed(123)
+bt_results <- tune_grid(bt_mod, model_recipe, resamples = btkfold, grid = bt_hyper_grid)
+
+show_best(bt_results, metric = "roc_auc", n = 5)
+```
+
+```{r}
+bt_best_hyperparameters <- select_best(bt_results, metric = "roc_auc")
+
+final_bt_wf <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(bt_mod) %>%
+  finalize_workflow(bt_best_hyperparameters)
+
+bt_final_fit <- final_bt_wf %>%
+  fit(data = bt_train)
+
+bt_final_fit %>%
+   predict(reten_test) %>%
+   bind_cols(reten_test %>% select(Status)) %>%
+   conf_mat(truth = Status, estimate = .pred_class)
+
+bt_final_fit %>%
+  predict(bt_train, type = "prob") %>%
+  mutate(truth = bt_train$Status) %>%
+  roc_curve(truth, .pred_Current) %>%
+  autoplot()
+```
+
+**Performance Summary:**
+
+- **Top ROC_AUC:** 81.88%
+- **Confusion Matrix:**
+  - True Positives: 1340
+  - True Negatives: 295
+  - False Positives: 262
+  - False Negatives: 200
+
+**Key Features:** Total Charges, Tenure, Monthly Charges, Contract, Online Security.
+
+---
+
+#### Random Forest
+And finally, random forest.
+```{r}
+rf_mod <- rand_forest(mode = "classification") %>%
+  set_engine("ranger")
+
+rf_results <- fit_resamples(rf_mod, model_recipe, btkfold)
+
+collect_metrics(rf_results)
+```
+
+```{r}
+rf_mod <- rand_forest(
+  mode = "classification",
+  trees = tune(),
+  mtry = tune(),
+  min_n = tune()
+) %>%
+  set_engine("ranger", importance = "impurity")
+
+rf_hyper_grid <- grid_regular(
+  trees(range = c(50, 800)),
+  mtry(range = c(2, 50)),
+  min_n(range = c(1, 20))
+)
+
+set.seed(123)
+rf_results <- tune_grid(rf_mod, model_recipe, resamples = btkfold, grid = rf_hyper_grid)
+
+show_best(rf_results, metric = "roc_auc")
+```
+
+```{r}
+rf_best_hyperparameters <- select_best(rf_results, metric = "roc_auc")
+
+final_rf_wf <- workflow() %>%
+  add_recipe(model_recipe) %>%
+  add_model(rf_mod) %>%
+  finalize_workflow(rf_best_hyperparameters)
+
+rf_final_fit <- final_rf_wf %>%
+  fit(data = reten_train)
+
+rf_final_fit %>%
+   predict(reten_test) %>%
+   bind_cols(reten_test %>% select(Status)) %>%
+   conf_mat(truth = Status, estimate = .pred_class)
+
+rf_final_fit %>%
+  predict(reten_train, type = "prob") %>%
+  mutate(truth = reten_train$Status) %>%
+  roc_curve(truth, .pred_Current) %>%
+  autoplot()
+
+rf_final_fit %>%
+  extract_fit_parsnip() %>%
+  vip(num_features = 20)
+```
+
+**Performance Summary:**
+
+- **Top ROC_AUC:** 84.35%
+- **Confusion Matrix:**
+  - True Positives: 1396
+  - True Negatives: 280
+  - False Positives: 277
+  - False Negatives: 144
+
+**Key Features:** Tenure, Total Charges, Contract, Monthly Charges, Online Security.
+
+---
+
+#### MARS - No Tenure
+
+To assess actionable insights, we reran the MARS model without Tenure.
+
+```{r}
+retentionTwo <- retentionOne %>%
+  select(-Tenure)
+
+set.seed(123)
+split  <- rsample::initial_split(retentionTwo, prop = 0.7, strata = "Status")
+reten2_train  <- rsample::training(split)
+reten2_test   <- rsample::testing(split)
+
+mars_mod <- mars(mode = "classification", num_terms = tune(), prod_degree = tune())
+
+set.seed(123)
+folds2 <- vfold_cv(reten2_train, v = 5, strata = "Status")
+
+model2_recipe <- recipe(Status ~ ., data = reten2_train)
+
+hyper_grid2 <- grid_regular(
+ num_terms(range = c(1, 50)), 
+ prod_degree(),
+ levels = 50
+ )
+
+results2 <- tune_grid(mars_mod, model2_recipe, resamples = folds2, grid = hyper_grid2)
+
+mars2_best_hyperparameters <- select_best(results2, metric = "roc_auc")
+
+final_mars_wf2 <- workflow() %>%
+  add_recipe(model2_recipe) %>%
+  add_model(mars_mod) %>%
+  finalize_workflow(mars2_best_hyperparameters)
+
+mars2_final_fit <- final_mars_wf2 %>%
+  fit(data = reten2_train)
+
+mars2_final_fit %>%
+   predict(reten2_test) %>%
+   bind_cols(reten2_test %>% select(Status)) %>%
+   conf_mat(truth = Status, estimate = .pred_class)
+
+mars2_final_fit %>%
+  predict(reten_train, type = "prob") %>%
+  mutate(truth = reten_train$Status) %>%
+  roc_curve(truth, .pred_Current) %>%
+  autoplot()
+
+mars2_final_fit %>%
+  extract_fit_parsnip() %>%
+  vip(num_features = 20)
+```
+
+**Performance Summary:**
+
+- **Top ROC_AUC:** 85.00%
+- **Confusion Matrix:**
+  - True Positives: 1378
+  - True Negatives: 312
+  - False Positives: 245
+  - False Negatives: 162
+
+**Key Features:** Total Charges, Monthly Charges, Payment Method (Electronic Check), Multiple Line (No Phone Service), Tech Support (Yes).
+
+---
+
+With the results of each model in hand, we concluded that the MARS model without Tenure provided the best balance of actionable insights and predictive performance. By excluding Tenure, we focused on features that can be directly influenced through business strategies, such as payment methods and service enhancements. While the confusion matrices for all models were comparable, the final selected model produced 245 false positives and 162 false negatives. Although these numbers may seem significant, they are within an acceptable range for a predictive model and serve as a solid foundation for further refinement and business insights.
+
+```{r}
+final_model <- mars2_final_fit
+```
+
+
+
+### Conclusion
+
+
+#### Key Factors to Focus On:
+
+From the analysis, the most impactful factors influencing customer churn are as follows:
+
+- **Total Charges and Monthly Charges:** Customers with higher bills are more likely to churn, suggesting pricing is a critical pain point.
+- **Payment Method - E-Check:** This method is strongly associated with higher churn, indicating customers using E-Check may face unique frustrations or financial challenges.
+- **Multiple Line - No Phone Service:** The absence of phone service correlates with churn, potentially highlighting missed opportunities for bundled services or misaligned customer needs.
+- **Tech Support - Yes:** Customers who utilize tech support appear to be more likely to churn, possibly reflecting dissatisfaction with service quality or resolution processes.
+
+These variables highlight areas where Regork can focus efforts to improve customer retention by addressing customer pain points, streamlining processes, and enhancing service offerings.
+
+#### Potential Revenue Loss:
+
+```{r}
+retention <- retention %>%
+  mutate(churn_prob = predict(final_model, retention, type = "prob")$.pred_Left)
+retention <- retention %>%
+  mutate(revenue_loss = churn_prob * MonthlyCharges)
+total_revenue_loss <- sum(retention$revenue_loss)
+print(total_revenue_loss)
+```
+
+Based on predictive modeling, Regork stands to lose an estimated $136,540 per month in revenue if no action is taken. This projection is based on the dataset of 6,988 customers and their likelihood of churn. Adjustments would be necessary for a larger or smaller customer base.
+
+#### Incentive Scheme:
+To mitigate churn and retain customers, Regork can implement the following incentive program:
+
+- **Price Incentives:**
+  - Discounts on bundled services for customers without phone service to encourage subscription to additional services.
+  - Temporary price reductions for high-risk customers (identified through predictive modeling).
+
+- **Payment Support:**
+  - Streamlined payment options with clear communication and education for E-Check users.
+  - Promotional incentives for customers switching to more reliable payment methods (e.g., auto-pay via credit/debit card).
+
+- **Tech Support Revamp:**
+  - Enhanced training for tech support staff to improve customer interactions.
+  - Proactive outreach to customers who frequently use tech support to address unresolved concerns or frustrations.
+
+#### Implications for Regork and Proposed Actions for the CEO:
+
+The analysis suggests that pricing, payment processing, and service quality are pivotal areas requiring immediate attention. Implementing the proposed retention strategy would likely mitigate revenue loss and improve customer satisfaction.
+
+**Recommendations for the CEO:**
+
+- **Price Sensitivity Review:** Conduct market analysis to benchmark service pricing against competitors and evaluate bundling discounts.
+- **Payment Method Overhaul:** Investigate pain points specific to E-Check and introduce user-friendly payment processes.
+- **Customer Support Audit:** Review tech support team performance, focusing on recurring issues, resolution time, and customer feedback.
+
+#### Limitations of Analysis
+
+1. **Data Scope:** The analysis is limited to the dataset provided, which may not fully represent Regork’s current customer base. Expanding the dataset with recent and broader customer information could enhance predictions.
+
+2. **Excluded Variables:** Certain potentially influential factors, such as regional variations, competitor influences, or service availability, were not included in the dataset. A portion of the customer base may reside in areas where Regork's services are not consistently offered or supported, leading to higher churn rates. Future analyses should consider integrating geographic data to address these gaps.
+
+3. **Customer Feedback:** The absence of qualitative data on customer experiences limits insights into underlying causes of dissatisfaction. Gathering and analyzing customer feedback, especially from regions with limited service availability, could help identify overlooked issues and inform targeted interventions.
+
